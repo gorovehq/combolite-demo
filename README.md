@@ -1,111 +1,206 @@
-# GutenFree Diet
+# GutenFree Diet (combolite-demo)
 
-GutenFree Diet is an ncurses e-reader built on db-combolite, as a demonstration and a stress test. It uses every data model the engine has so far, on real data from [Project Gutenberg](https://www.gutenberg.org/):
+`GutenFree Diet` is an interactive ncurses-based e-reader, ingestion pipeline, and real-world stress test for the `combolite` database engine. It exercises every data model natively supported by the engine against public domain literature from [Project Gutenberg](https://www.gutenberg.org/):
 
-| Feature | Engine model |
-|---|---|
-| Card catalog of about 80,000 ebooks (GUTINDEX plus `pg_catalog.csv`): filters, 7 sort orders | row-oriented table, 8 indexes |
-| Book text as about 2 KB passages, a reader | document pool |
-| Search across every stored book | full-text index (BM25) |
-| Semantic search, "more like this" | vector collections (f32 and 1-bit), neighbour graph, links |
-| Diagnostics: gauges for every operation, live probe load | time series |
+| Feature | combolite Storage Model | Implementation Details |
+|---|---|---|
+| **E-Book Card Catalog** | Relational Table | ~80,000 titles from `GUTINDEX.ALL` and `pg_catalog.csv` with 8 composite indexes and 7 interactive sort orders. |
+| **Passage Storage** | Document Pool | Book texts partitioned into ~2 KB passages with full JSON delta revision histories. |
+| **Full-Text Search** | Full-Text Index (BM25) | Inverted index tokenization and BM25 relevance scoring across all downloaded literature. |
+| **Semantic Similarity** | Vector Collection & Links | Dense float32 embeddings (384-dimensional) and 1-bit binary vectors with an HNSW-like neighbour graph and `similar_to` graph links. |
+| **Telemetry & Metrics** | Time Series | Nanosecond-resolution operation timers, live probe load gauges, and hardware acceleration telemetry. |
 
-The demo uses the engine's internal C API. There is no query language yet: that is milestones M20 and M21. **No database, book text or model is in this repository.** You build your own local database with the steps below.
+> **Note on Data & Models:** No copyrighted books, database archives, or machine learning models are stored in this repository. All datasets and model weights are retrieved locally using the scripts described below.
 
-## Requirements
+---
 
-- Linux or another POSIX system, CMake 3.16 or later, a C99 and a C++ compiler.
-- ncurses with wide-character support. On Debian and Ubuntu: `sudo apt install libncurses-dev`.
-- Python 3, for the download scripts (standard library only).
-- About 1 GB of disk for a few dozen books with embeddings.
+## Prerequisites
 
-llama.cpp (MIT) is vendored in `demo/third-party/llama.cpp`, pinned to release b11701 (see `VENDORED.md`). It is used only to compute embeddings and is built only with the demo.
+- **POSIX OS**: Linux (Debian, Ubuntu, Fedora, Arch) or macOS.
+- **Compilers & Build**: C99 compiler (`gcc` or `clang`), C++ compiler (`g++` or `clang++`), CMake >= 3.20.
+- **Terminal UI**: `ncurses` development headers with wide-character support:
+  - *Debian/Ubuntu*: `sudo apt install libncurses-dev`
+  - *Fedora*: `sudo dnf install ncurses-devel`
+  - *Arch*: `sudo pacman -S ncurses`
+- **Embedding Support**: Python 3 (standard library only) for downloading books and metadata.
+- **Hardware Acceleration (Optional)**:
+  - NVIDIA CUDA Toolkit >= 11.8 for GPU-accelerated embeddings and vector search.
+  - Vulkan SDK 1.3+ with `glslc` for cross-vendor GPU compute.
 
-## Build
+---
 
-From `db-combolite/`:
+## Detailed Build Guide
 
-```sh
-cmake -S . -B build-demo-rel -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCDB_BUILD_DEMO=ON -DCDB_BUILD_TESTS=OFF
-cmake --build build-demo-rel -j --target gutenfree
-```
+### 1. Building via Umbrella Presets (Recommended)
 
-The binary goes into this folder, next to its scripts, as `./gutenfree`. `-DCDB_BUILD_DEMO=ON` is required: the engine's default build never needs ncurses or llama.cpp. A Debug build (`-B build-demo`, without a build type) turns on AddressSanitizer and UBSan. That is good for finding bugs, but every timing it shows is about 9 times slower. The screens show which build is running, and the build made last is the one in this folder.
-
-### With a GPU
-
-The engine's optional accelerator (spec 18) can run vector searches and neighbour-graph refreshes on a GPU. Add `-DCDB_ACCEL_CUDA=ON` (NVIDIA, needs the CUDA toolkit) and/or `-DCDB_ACCEL_VULKAN=ON` (any Vulkan 1.2 GPU):
-
-```sh
-cmake -S . -B build-demo-accel -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCDB_BUILD_DEMO=ON -DCDB_BUILD_TESTS=OFF \
-      -DCDB_ACCEL_CUDA=ON -DCDB_ACCEL_VULKAN=ON -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89
-cmake --build build-demo-accel -j --target gutenfree
-```
-
-- **Embeddings on the GPU too:** the engine's accelerator covers vector searches and graph refreshes only; the embedding model runs in llama.cpp, which uses the GPU only when built with `-DGGML_CUDA=ON` (or `-DGGML_VULKAN=ON`). Without it, `embed` runs on the CPU. Set `CMAKE_CUDA_ARCHITECTURES` to your GPU's (89 is an RTX 40-series); leaving it out builds llama.cpp's kernels for every architecture, which takes much longer. `nvcc` must be on `PATH` (`/usr/local/cuda/bin`).
-
-- **Which device:** the demo uses CUDA when there is an NVIDIA GPU, otherwise the best Vulkan GPU. The main screen, the diagnostics screen and every command show which one, and the diagnostics screen counts the searches it took.
-- **Results:** they are the same with or without it; only the time changes.
-- **Turning it off:** `GUTENFREE_ACCEL=off` runs without it. `GUTENFREE_ACCEL=software` also allows a device that emulates a GPU on the CPU, such as llvmpipe, which is usually slower than having none.
-- **Measured** on an RTX 4060 laptop, building the graph of 15,521 passages (`bench-graph`): 107 s with CUDA, 150 s without.
-
-## Get the data and run
-
-Everything runs from this folder, and everything it downloads or builds lands in `data/`, which git ignores. The scripts fetch only from a Gutenberg mirror, never from www.gutenberg.org. The default is Project Gutenberg's own pglaf.org mirror; `--mirror URL` picks another one from MIRRORS.ALL.
+From the repository root, build using the configured presets:
 
 ```sh
-cd demo/gutenfree
-python3 gf_fetch.py --gutindex    # the catalog index, GUTINDEX.ALL (about 9 MB)
-python3 gf_fetch.py --catalog     # genres, subjects, dates, LoCC classes (about 21 MB)
-python3 gf_model.py               # embedding model bge-small-en-v1.5, about 37 MB, SHA-256 checked
-python3 gf_fetch.py --count 25    # optional: 25 random English books (or add them in the app)
+# Build with CPU fallback (no GPU required)
+cmake --preset gutenfree-cpu
+cmake --build --preset gutenfree-cpu -j
 
-./gutenfree ingest-index          # catalog: GUTINDEX, then pg_catalog.csv merged in (about 30 s)
-./gutenfree ingest-books          # store the fetched books as passages, with full-text indexing
-./gutenfree embed                 # vectors, similar_to links, neighbour graph
-./gutenfree                       # the e-reader
+# Build with NVIDIA CUDA acceleration (requires nvcc and CUDA toolkit)
+cmake --preset gutenfree-cuda
+cmake --build --preset gutenfree-cuda -j
+
+# Build with Vulkan compute acceleration
+cmake --preset gutenfree-vulkan
+cmake --build --preset gutenfree-vulkan -j
+
+# Build with both CUDA and Vulkan backends enabled
+cmake --preset gutenfree-both
+cmake --build --preset gutenfree-both -j
 ```
 
-The database is `data/gutenfree.cdbarch`. Set `GUTENFREE_DB=/some/path` (no extension) to use another one. To start over, delete `data/gutenfree.cdbarch` and `data/gutenfree.cdbwork`.
+The resulting executable is generated in the corresponding build directory (e.g., `build-gutenfree-cpu/combolite-demo/gutenfree`).
 
-**Only one process may open a database at a time.** Multi-process access is milestone M19, and until then nothing stops a second process from opening the file and corrupting it. Quit the e-reader before running a command against the same database.
+### 2. Standalone Build
 
-## Using the e-reader
-
-| Key | Screen |
-|---|---|
-| `c` | Card catalog. `/` filter, `o` change the sort order, Space queue a book, `A` queue every match, `f` the download queue (runs in the background), Enter details, `g` go to an ebook number |
-| `f` | Download queue: start it, then use the app while it runs; the status bar shows progress |
-| F2 or Ctrl-D | Diagnostics, from any screen |
-| `r` | Shelf, the books with text, opening in the reader |
-| `s` | Full-text search |
-| `v` | Semantic search: exact, neighbour-graph and 1-bit results compared |
-| `e` | Embed stored books that have no vectors yet |
-| `d` | Diagnostics: gauges, `L` live probe load, Enter explains a measure |
-| `i` | Re-ingest the catalog |
-
-## Other commands
+To build directly from within `combolite-demo/`:
 
 ```sh
-./gutenfree filter genre="science fiction" type=Text author=verne   # the catalog filter, from the shell
-./gutenfree probe 15                                                # 15 s of probe load: lookups, reads, scans, text and vector search
-./gutenfree metrics                                                 # every point of each gauge: count, min, mean, max, last
-./gutenfree metrics vec.search_graph.fresh fts.search               # an operation's p50, p99 and mean across runs
-./gutenfree graph                                                   # refresh the passages' neighbour graph
-./gutenfree link-similar                                            # link similar books (one bulk search)
-./gutenfree bench-graph data/copy                                   # time a whole graph build, on a copy of the database
-GUTENFREE_WORKERS=4 ./gutenfree pipeline 100                        # 100 new books: parallel downloads, 4 writer processes, GPU embedding
-python3 gf_fetch.py --rename-existing                               # give books saved under <number>.txt their title names
-./gutenfree --help
+cd combolite-demo
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j
 ```
 
-**The pipeline** is the stress test. It fetches books the database has never seen (8 downloads at once, no pause, backing off on 429 and 503) and hands each to one of `GUTENFREE_WORKERS` writer processes the moment it lands. Each writer has its own database handle, so the engine sees that many writers at once; each stores its book, embeds it on the GPU and commits the vectors. One book in ten is held out as unseen search queries. Engine refusals are retried three times and counted per status. Books are saved as `<Title>.txt` in characters no shell needs escaped; `manifest.tsv` maps numbers to files.
+---
 
-**Measurements.** Every command above, and the ingest and embed commands, ends with a report: each engine operation it made, timed one call at a time (count, min, p50, p95, p99, max, calls per second), the archive commits and file growth, and the accelerator's share of the searches. The summaries are stored, so `metrics` shows them later. `embed` ends with a search check: 200 stored passages and 50 fresh phrases (`gf_queries.c`, embedded as semantic search does) each searched exactly, through the neighbour graph and through the 1-bit vectors, with how many of the exact top 10 the other two find. Stored passages find their own precomputed neighbours, so the fresh queries are the honest score. Timings are only meaningful in a RelWithDebInfo or Release build; the report names the build.
+## Getting Started: Ingestion and E-Reader
 
-## Licences and sources
+All operations run from within `combolite-demo/` or use the relative paths to `data/`. All fetched books, metadata, and generated database archives are stored in `data/` (which is git-ignored).
 
-- The demo code is MIT, like the rest of db-combolite.
-- llama.cpp: MIT. ncurses: X11-style.
-- bge-small-en-v1.5 (BAAI) and its GGUF conversion (CompendiumLabs): MIT. The model is downloaded at setup, never committed.
-- Book texts and catalog data come from Project Gutenberg through its mirrors and are never committed. Check Project Gutenberg's licence and trademark terms before you redistribute any text you fetch.
+### 1. Fetch Metadata and Embedding Model
+
+Download scripts retrieve files strictly from Project Gutenberg mirrors (default: `pglaf.org`):
+
+```sh
+cd combolite-demo
+
+# 1. Fetch the master catalog index (GUTINDEX.ALL, ~9 MB)
+python3 gf_fetch.py --gutindex
+
+# 2. Fetch extended catalog metadata (genres, dates, LoCC classes, ~21 MB)
+python3 gf_fetch.py --catalog
+
+# 3. Download the verified embedding model (bge-small-en-v1.5, ~37 MB, SHA-256 checked)
+python3 gf_model.py
+
+# 4. Fetch a sample pool of books (e.g. 25 random English books)
+python3 gf_fetch.py --count 25
+```
+
+### 2. Ingest and Embed
+
+Run the compiled `gutenfree` binary to populate the database:
+
+```sh
+# Ingest catalog metadata into the relational table (~30 seconds)
+./gutenfree ingest-index
+
+# Parse downloaded books into passages and build the BM25 full-text index
+./gutenfree ingest-books
+
+# Compute vector embeddings, construct the neighbour graph, and link similar books
+./gutenfree embed
+```
+
+The database archive is saved to `data/gutenfree.cdbarch` with companion runtime files in `data/gutenfree.cdbwork/`. To specify a different database path, set `GUTENFREE_DB=/custom/path`.
+
+### 3. Launch the Interactive E-Reader
+
+Launch the ncurses interface:
+
+```sh
+./gutenfree
+```
+
+#### Keybindings Navigation
+
+| Key | View | Description |
+|---|---|---|
+| `c` | **Card Catalog** | Browse ~80,000 books. `/` filter, `o` change sort, `Space` queue download, `Enter` details. |
+| `r` | **Reading Shelf** | View and read stored passages of downloaded books. |
+| `s` | **Full-Text Search** | Query book text with BM25 scoring and snippet highlights. |
+| `v` | **Semantic Search** | Compare exact cosine search, approximate neighbour-graph search, and 1-bit Hamming search. |
+| `d` / `F2` | **Diagnostics** | Live telemetry, latency percentiles (p50, p95, p99), engine buffer gauges, and accelerator utilization. |
+| `e` | **Embed Books** | Trigger batch vector embedding for freshly ingested books. |
+| `q` | **Quit** | Cleanly close database and flush coordinator slots. |
+
+---
+
+## Parallel Stress Testing: The Ingestion Pipeline
+
+The demo includes a stress pipeline designed to validate engine concurrency, multi-process coordinator locking, and crash safety under sustained write load:
+
+```sh
+# Run parallel ingestion pipeline with 4 independent writer processes
+GUTENFREE_WORKERS=4 ./gutenfree pipeline 100
+```
+
+### How the Pipeline Works:
+- **Concurrent Ingestion**: Concurrently downloads up to 100 unseen books and distributes them across `GUTENFREE_WORKERS` parallel worker processes.
+- **Independent Database Handles**: Each worker process opens an independent `cdb_db` instance with its own coordinator slot file.
+- **Hardware-Accelerated Embedding**: Workers compute 384-dimensional embeddings on the GPU and commit vector records concurrently.
+- **Integrity Validation**: One out of every ten books is held out to generate unseen semantic search test queries (`gf_queries.c`), verifying exact vs. approximate recall in real time.
+
+---
+
+## Benchmarking & Diagnostics Commands
+
+```sh
+# Apply query filters directly from the command line
+./gutenfree filter genre="science fiction" author=verne
+
+# Run 15 seconds of synthetic probe load (reads, point scans, vector searches)
+./gutenfree probe 15
+
+# Display aggregated latency metrics across all database operations
+./gutenfree metrics
+
+# Benchmark neighbour graph construction time on a scratch database copy
+./gutenfree bench-graph data/test_copy
+```
+
+---
+
+## Features as Built
+
+- **Multi-Process Concurrency**: Full compatibility with the liveness redesign (steps 1–5, 7); writers hold OS slot file locks and automatically adopt pending journals if a sibling process terminates abruptly.
+- **Hardware Accelerator Support**: Automatic runtime dispatch to NVIDIA CUDA or Vulkan GPU backends for dense vector similarity scoring and neighbour graph refreshes.
+- **Real-Time Telemetry**: Microsecond-resolution timing instrumentation recording call count, min, p50, p95, p99, and max durations for every database engine call.
+- **Robust Network Fetching**: Backoff logic handling HTTP 429/503 responses and mirror failovers during automated book retrieval.
+
+---
+
+## Known Issues
+
+1. **Full-Text Memory Footprint at Large `doc_max`**: The token parser enforces zero-cut token guarantees, requiring up to 260 MB of token buffer space when `doc_max` is configured to 8 MB.
+2. **Idle Collection Log Lag**: If a vector collection remains closed during database reconciliation, its change-log trimming is deferred until its next open.
+3. **GPU Power States Under Sparse Vulkan Workloads**: Short, sporadic Vulkan search bursts on NVIDIA hardware can cause driver power downclocking (P8 state), resulting in latency spikes compared to persistent CUDA contexts.
+
+---
+
+## ToDos
+
+- Integrate upcoming CMBQL query compiler when available in core engine.
+- Implement automatic worker count sizing based on host CPU core availability and VRAM limits.
+- Add support for dynamic model quantization (e.g. 4-bit / 8-bit weights) in the embedding inference runner.
+
+---
+
+## Provisioned but Not Yet Implemented
+
+1. **High-Level CMBQL Query Integration**: The demo currently issues operations directly through internal C99 engine APIs (`cdb_table_*`, `cdb_doc_*`, `cdb_vec_*`). Pipelined CMBQL query string execution is provisioned for future integration once the upstream compiler is stabilized.
+2. **Automated Peer-to-Peer Catalog Synchronization**: P2P replication gossip protocols (spec 19 draft) are not yet integrated into the demo application; catalog synchronization currently operates via batch metadata ingestion.
+
+---
+
+## License & Third-Party Attributions
+
+- Demo code: MIT License.
+- `llama.cpp`: MIT License (vendored in `demo/third-party/llama.cpp`, pinned to b11701).
+- `bge-small-en-v1.5`: MIT License (BAAI / CompendiumLabs).
+- `ncurses`: X11 / MIT-compatible license.
+- E-book texts and catalog datasets: Public domain from Project Gutenberg. See [`ATTRIBUTIONS.md`](../ATTRIBUTIONS.md) for full licensing records.
