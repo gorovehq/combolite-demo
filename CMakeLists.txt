@@ -53,3 +53,6 @@ endif()
 # The binary goes next to its scripts and data/, so it runs as ./gutenfree
 # from demo/gutenfree/ (the last build made wins; git ignores it).
 set_target_properties(gutenfree PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_test(NAME "combolite-demo:smoke_help" COMMAND gutenfree --help)
+set_tests_properties("combolite-demo:smoke_help" PROPERTIES LABELS "combolite-demo")
