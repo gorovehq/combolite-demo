@@ -20,8 +20,13 @@ set(GGML_NATIVE ON CACHE BOOL "" FORCE)
 # The vendored tree has no .git: name the pinned release, not this repo's commit.
 set(LLAMA_BUILD_NUMBER 11701)
 set(LLAMA_BUILD_COMMIT 01fc3aa)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third-party/llama.cpp
-                 ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama.cpp/CMakeLists.txt)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama.cpp
+                   ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
+elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../third-party/llama.cpp/CMakeLists.txt)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third-party/llama.cpp
+                   ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
+endif()
 
 add_executable(gutenfree gf_main.c gf_bench.c gf_queries.c gf_db.c gf_catalog.c gf_books.c gf_metrics.c gf_embed.c gf_vec.c gf_probe.c gf_pipeline.c gf_jobs.c gf_ui.c)
 target_include_directories(gutenfree PRIVATE
